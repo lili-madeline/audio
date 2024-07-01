@@ -1,19 +1,24 @@
 use alsa::pcm::{Access, Format, HwParams, State, IO};
 use alsa::{Direction, ValueOr, PCM};
-use claxon::{Block, FlacReader};
-use std::{env, iter};
+use async_executor::Executor;
+use claxon::FlacReader;
+use futures_lite::future;
 use std::fs::File;
 use std::io::Read;
-use std::sync::{Arc, Mutex, MutexGuard};
-use async_executor::Executor;
-use futures_lite::future;
-use wgpu::{Backends, Device, DeviceDescriptor, Extent3d, Features, Instance, InstanceDescriptor, Limits, PowerPreference, Queue, RequestAdapterOptions, Surface, TextureFormat, TextureUsages, SurfaceConfiguration, TextureViewDescriptor, CommandEncoderDescriptor, RenderPassDescriptor, RenderPassColorAttachment, Operations, LoadOp, Color, StoreOp};
+use std::sync::{Arc, Mutex};
+use std::{env, iter};
+use wgpu::{
+    Backends, Color, CommandEncoderDescriptor, Device, DeviceDescriptor, Features, Instance,
+    InstanceDescriptor, Limits, LoadOp, Operations, PowerPreference, Queue,
+    RenderPassColorAttachment, RenderPassDescriptor, RequestAdapterOptions, StoreOp, Surface,
+    SurfaceConfiguration, TextureUsages, TextureViewDescriptor,
+};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
+use winit::window::{Window, WindowId};
 
 macro_rules! dbg {
 ($( $x:expr ), +) => {
@@ -43,36 +48,50 @@ struct Render<'a> {
 
 impl ApplicationHandler for App<'_> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window = Arc::new(event_loop.create_window(Window::default_attributes().with_visible(true)).unwrap());
+        let window = Arc::new(
+            event_loop
+                .create_window(Window::default_attributes().with_visible(true))
+                .unwrap(),
+        );
         let executor = Executor::new();
-        self.render = Some(future::block_on(executor.run(executor.spawn(
-            wgpu_setup::<'_>(window.clone())
-        ))));
+        self.render = Some(future::block_on(
+            executor.run(executor.spawn(ui_setup::<'_>(window.clone()))),
+        ));
         self.window = Some(window);
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
         let render = self.render.clone().unwrap();
         let mut render = render.lock().unwrap();
         match event {
             WindowEvent::Resized(s) => {
-
                 render.physical_size = s;
                 render.surface_configuration.height = s.height;
                 render.surface_configuration.width = s.width;
-                render.surface.configure(&render.device, &render.surface_configuration);
+                render
+                    .surface
+                    .configure(&render.device, &render.surface_configuration);
             }
             WindowEvent::CloseRequested => {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
                 let output = render.surface.get_current_texture().unwrap();
-                let view = output.texture.create_view(&TextureViewDescriptor::default());
-                let mut encoder = render.device.create_command_encoder(&CommandEncoderDescriptor {
-                    label: Some("Render Encoder"),
-                });
+                let view = output
+                    .texture
+                    .create_view(&TextureViewDescriptor::default());
+                let mut encoder = render
+                    .device
+                    .create_command_encoder(&CommandEncoderDescriptor {
+                        label: Some("Render Encoder"),
+                    });
                 {
-                    let render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    let _render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
                         label: Some("Render Pass"),
                         color_attachments: &[Some(RenderPassColorAttachment {
                             view: &view,
@@ -94,14 +113,13 @@ impl ApplicationHandler for App<'_> {
                 }
                 render.queue.submit(iter::once(encoder.finish()));
                 output.present();
-                self.window.as_ref().unwrap().request_redraw();
             }
             _ => (),
         }
     }
 }
 
-async fn wgpu_setup<'a>(window: Arc<Window>) -> Arc<Mutex<Render<'a>>> {
+async fn ui_setup<'a>(window: Arc<Window>) -> Arc<Mutex<Render<'a>>> {
     let physical_size = window.inner_size();
     let instance = Instance::new(InstanceDescriptor {
         backends: Backends::PRIMARY,
@@ -109,21 +127,32 @@ async fn wgpu_setup<'a>(window: Arc<Window>) -> Arc<Mutex<Render<'a>>> {
     });
     let surface = instance.create_surface(window.clone()).unwrap();
 
-    let adapter = instance.request_adapter(&RequestAdapterOptions {
-        power_preference: PowerPreference::LowPower,
-        force_fallback_adapter: false,
-        compatible_surface: Some(&surface),
-    }).await.unwrap();
+    let adapter = instance
+        .request_adapter(&RequestAdapterOptions {
+            power_preference: PowerPreference::LowPower,
+            force_fallback_adapter: false,
+            compatible_surface: Some(&surface),
+        })
+        .await
+        .unwrap();
 
-    let (device, queue) = adapter.request_device(&DeviceDescriptor {
-        label: None,
-        required_features: Features::empty(),
-        required_limits: Limits::default(),
-    }, None).await.unwrap();
+    let (device, queue) = adapter
+        .request_device(
+            &DeviceDescriptor {
+                label: None,
+                required_features: Features::empty(),
+                required_limits: Limits::default(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
 
     let surface_capabilities = surface.get_capabilities(&adapter);
 
-    let surface_format = surface_capabilities.formats.iter()
+    let surface_format = surface_capabilities
+        .formats
+        .iter()
         .find(|f| f.is_srgb())
         .copied()
         .unwrap_or(surface_capabilities.formats[0]);
@@ -158,12 +187,11 @@ fn run() {
 }
 
 fn main() {
-
     let mut track = None;
     if env::args().len() == 2 {
         track = env::args().last();
     }
-    let mut reader = claxon::FlacReader::open(track.unwrap()).unwrap();
+    let reader = claxon::FlacReader::open(track.unwrap()).unwrap();
     let pcm = PCM::new("default", Direction::Playback, false).unwrap();
 
     dbg!(reader.streaminfo());
@@ -189,9 +217,8 @@ fn main() {
         .unwrap();
     pcm.sw_params(&swp).unwrap();
 
-
     run();
-    //play_flac(reader, &pcm, &io);
+    play_flac(reader, &pcm, &io);
 
     pcm.drain().unwrap();
 }
@@ -211,8 +238,7 @@ fn play_flac(mut reader: FlacReader<File>, pcm: &PCM, io: &IO<u8>) {
             Some(b) => {
                 let buffer = &b
                     .stereo_samples()
-                    .map(|i| [i.0.to_le_bytes(), i.1.to_le_bytes()])
-                    .flatten()
+                    .flat_map(|i| [i.0.to_le_bytes(), i.1.to_le_bytes()])
                     .flatten()
                     .collect::<Vec<u8>>()[..];
 
@@ -227,7 +253,7 @@ fn play_flac(mut reader: FlacReader<File>, pcm: &PCM, io: &IO<u8>) {
         }
     }
 }
-fn play_pcm(pcm: &PCM, io: &IO<u8>) {
+fn _play_pcm(pcm: &PCM, io: &IO<u8>) {
     let mut buffer = [0u8; 44100];
     let mut f = File::open("audio.pcm").unwrap();
 
