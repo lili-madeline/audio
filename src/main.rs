@@ -255,7 +255,7 @@ fn play_flac(mut reader: FlacReader<File>, pcm: &PCM, io: &IO<u8>) {
 }
 fn _play_pcm(pcm: &PCM, io: &IO<u8>) {
     let mut buffer = [0u8; 44100];
-    let mut f = File::open("audio.pcm").unwrap();
+    let mut f = File::open("../music/audio.pcm").unwrap();
 
     let mut time = 0;
 
